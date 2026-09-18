@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>课搭子 · 把知识学明白</title>
+<link rel="stylesheet" href="./style.css">
+<script type="module" src="./app.mjs"></script>
+</head>
+<body>
+<a class="skip" href="#question">跳转到提问</a>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="./"><span class="brand-mark">课</span><span>课搭子<small>YOUR STUDY COMPANION</small></span></a>
+  <button id="new-thread" class="primary new-thread">＋ 开始新的讨论</button>
+  <div class="section-label">我的讨论 <span>HISTORY</span></div>
+  <nav id="threads" aria-label="历史讨论"><p class="muted">连接后显示历史记录</p></nav>
+  <div class="sidebar-bottom">
+    <div class="course-mini"><span class="eyebrow">当前课程</span><strong>概率论与数理统计</strong><p>从一个问题，到真正理解。</p><span class="tag">入门知识库 · 5 个主题</span></div>
+    <button id="profile-open" class="plain">学习偏好与薄弱点 <span>↗</span></button>
+    <button id="settings-open" class="plain">连接设置 <span>↗</span></button>
+  </div>
+</aside>
+<main>
+  <header class="topbar"><span>学习工作台 <span class="slash">/</span> 概率论</span><span id="connection" class="connection">等待连接</span></header>
+  <div class="workspace">
+    <section class="conversation" aria-label="学习对话">
+      <div class="page-heading"><div><span class="eyebrow">ONE QUESTION AT A TIME</span><h1>把「不太懂」<br>变成「原来如此」。</h1></div><span class="chapter">P(A | B)<small>从条件出发</small></span></div>
+      <fieldset class="modes"><legend class="sr-only">选择辅导方式</legend>
+        <label><input type="radio" name="mode" value="hint" checked><span>给我提示</span></label>
+        <label><input type="radio" name="mode" value="check"><span>检查我的步骤</span></label>
+        <label><input type="radio" name="mode" value="explain"><span>完整讲解</span></label>
+      </fieldset>
+      <p id="mode-description" class="mode-description">先给一点提示，把思考的空间留给你。</p>
+      <div id="messages" class="messages" aria-label="消息记录">
+        <article id="welcome" class="welcome">
+          <div class="welcome-label"><span class="mini-mark">课</span> 你的学习搭子</div>
+          <h2>今天，卡在哪一步？</h2>
+          <p>贴一道题、上传课件截图，或者直接说说你的困惑。<br>我们一起找到课程依据，再一步步想明白。</p>
+          <div class="examples">
+            <button data-question="为什么互斥不一定独立？请结合定义解释。"><span>01 · 概念辨析</span>互斥和独立，究竟差在哪？<b>↗</b></button>
+            <button data-question="甲箱占60%，红球占20%；乙箱占40%，红球占80%。抽到红球后来自甲箱的概率怎么求？"><span>02 · 一起解题</span>贝叶斯公式的分母怎么写？<b>↗</b></button>
+          </div>
+        </article>
+      </div>
+      <div class="composer-wrap">
+        <p id="status" class="status" role="status" aria-live="polite">可以先试一道示例题。</p>
+        <form id="chat-form" class="composer">
+          <label for="question" class="sr-only">输入问题或解题步骤</label>
+          <textarea id="question" rows="3" maxlength="4000" placeholder="把你的问题、已知条件或解题步骤写在这里…"></textarea>
+          <div id="attachment" hidden><img id="preview" alt="待上传的题目图片"><span id="filename"></span><button type="button" id="remove-file" class="text-button">移除</button></div>
+          <div class="composer-actions">
+            <label class="upload-button" for="file"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><path d="m4 18 6-6 4 4 3-3 4 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>上传题目<input id="file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+            <span class="shortcut">Ctrl / ⌘ + Enter 发送</span>
+            <button id="stop" type="button" class="secondary" hidden>停止</button>
+            <button id="send" type="submit" class="primary">一起想想 <span>↑</span></button>
+          </div>
+        </form>
+        <p class="footnote">回答结合课程依据生成。图片识别与推导可能有误，请核对关键条件。</p>
+      </div>
+    </section>
+    <aside class="evidence-panel" aria-label="课程依据与处理过程">
+      <div class="evidence-heading"><span class="eyebrow">LEARNING WITH EVIDENCE</span><h2>每一步，都有依据。</h2><p>检索到的课程资料会出现在这里。</p></div>
+      <div class="tabs"><button class="active" id="tab-evidence" aria-pressed="true">课程依据</button><button id="tab-process" aria-pressed="false">处理过程</button></div>
+      <div id="evidence"><div class="empty-evidence"><div class="paper-icon">A ∩ B<hr>P(B)</div><h3>等待你的第一个问题</h3><p>先检索，再解释。<br>点击依据卡片，查看原文和排名。</p></div></div>
+      <div id="process" hidden><p class="muted">提问后展示工具调用和检索方式。</p></div>
+      <div class="small-note"><span>学习小贴士</span><p>“已知 B 发生”意味着：<br>你的样本空间已经改变了。</p></div>
+    </aside>
+  </div>
+</main>
+</div>
+<dialog id="settings-dialog">
+<form id="settings-form"><span class="eyebrow">CONNECTION</span><h2>连接你的课搭子</h2>
+<label for="api-origin">后端地址</label><input id="api-origin" type="url" required value="http://127.0.0.1:8000">
+<p class="muted">启动后端后，填写它的本机地址即可。</p>
+<div class="dialog-actions"><button type="button" data-close="settings-dialog" class="secondary">取消</button><button class="primary" type="submit">连接</button></div>
+</form></dialog>
+<dialog id="profile-dialog">
+<form id="profile-form"><span class="eyebrow">LEARNING MEMORY</span><h2>让辅导更适合你</h2>
+<label for="style">讲解偏好</label><select id="style"><option>先给提示</option><option>多举例子</option><option>简洁公式</option></select>
+<label for="weak-topics">我想加强的知识点</label><textarea id="weak-topics" rows="4" maxlength="600" placeholder="每行一个，例如：条件概率的方向"></textarea>
+<p class="muted">只有你点击保存，才会写入跨会话记忆。最多10项，每项60字。</p>
+<div class="dialog-actions"><button type="button" data-close="profile-dialog" class="secondary">取消</button><button class="primary" type="submit">保存偏好</button></div>
+</form></dialog>
+</body></html>
