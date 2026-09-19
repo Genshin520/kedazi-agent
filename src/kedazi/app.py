@@ -3,19 +3,22 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import PureWindowsPath
 from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field
 
 from kedazi.agent import StudyContext, build_agent, run_study
 from kedazi.config import Settings
 from kedazi.memory import SQLiteProfileStore
+from kedazi.materials import MaterialStore, material_worker, public_material
 from kedazi.models import create_chat_model, create_embeddings
 from kedazi.rag import CourseRAG
 from kedazi.repository import Repository
@@ -46,7 +49,14 @@ async def lifespan(app):
             app.state.agent = await build_agent(model, rag, saver, store)
             app.state.storage = ImageStorage(settings)
             app.state.busy = set()  # 避免同一讨论同时写入两轮消息。
-            yield
+            app.state.materials = MaterialStore(settings.data_dir)
+            worker = asyncio.create_task(material_worker(settings, app.state.materials, rag))
+            try:
+                yield
+            finally:
+                worker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
         finally:
             await repo.db.close()
 
@@ -65,6 +75,7 @@ class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     mode: Literal["hint", "check", "explain"] = "hint"
     image_id: uuid.UUID | None = None
+    material_id: uuid.UUID | None = None
 
 
 class Profile(BaseModel):
@@ -128,6 +139,42 @@ async def upload(file: UploadFile = File(...)):
     return {"image_id": await app.state.repo.add_upload(key)}
 
 
+@app.post("/api/materials")
+async def upload_material(file: UploadFile = File(...)):
+    """上传只保存资料；发送“加入知识库”后由 Agent 调用 MCP 提交解析。"""
+    if not settings.mineru_token.get_secret_value():
+        await file.close()
+        raise HTTPException(422, "请先在 .env 填写 MINERU_TOKEN 并重启后端")
+    filename = PureWindowsPath(file.filename or "资料").name[:180]
+    try:
+        data = await file.read(20 * 1024 * 1024 + 1)
+        key = await app.state.storage.upload_material(data, filename)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("资料上传失败：%s", type(exc).__name__)
+        raise HTTPException(502, "资料上传 OSS 失败，请检查配置后重试") from exc
+    finally:
+        await file.close()
+    return public_material(app.state.materials.add(filename, key))
+
+
+@app.get("/api/materials")
+async def materials():
+    return [public_material(row) for row in app.state.materials.list()]
+
+
+@app.get("/api/materials/{material_id}/markdown")
+async def material_markdown(material_id: uuid.UUID):
+    row = app.state.materials.get(str(material_id))
+    if not row or row["status"] != "ready":
+        raise HTTPException(404, "资料尚未入库")
+    path = app.state.materials.markdown_path(str(material_id))
+    if not path.exists():
+        raise HTTPException(404, "Markdown 文件不存在")
+    return FileResponse(path, media_type="text/markdown", filename=row["filename"] + ".md")
+
+
 @app.post("/api/chat")
 async def chat(body: ChatInput, request: Request):
     await check_thread(body.thread_id)
@@ -139,11 +186,15 @@ async def chat(body: ChatInput, request: Request):
         if not object_key:
             raise HTTPException(404, "图片不存在")
 
+    if body.material_id and not app.state.materials.get(str(body.material_id)):
+        raise HTTPException(404, "资料不存在，请重新上传")
     thread_id = str(body.thread_id)
     if thread_id in app.state.busy:
         raise HTTPException(409, "这个讨论正在回答，请等待完成")
     app.state.busy.add(thread_id)
-    context = StudyContext(mode=body.mode, request_id=uuid.uuid4().hex, queue=asyncio.Queue())
+    context = StudyContext(mode=body.mode, request_id=uuid.uuid4().hex, queue=asyncio.Queue(),
+                           material_id=str(body.material_id) if body.material_id else None,
+                           upload_request=bool(re.search(r"^(?:请|我想|我要|帮我|请帮我|怎么|如何)?(?:上传|导入|添加)", body.message.strip())))
 
     async def generate():
         try:

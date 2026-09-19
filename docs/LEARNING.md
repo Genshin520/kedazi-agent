@@ -14,21 +14,19 @@
 
 对应你笔记里的：加载文档 → 按标题切分 → 递归切分 → 加 metadata。
 
-### build_index()
+### build_index() 与 import_markdown()
 
-```python
-self.chunks = load_and_split_documents()
-await self.vectorstore.aadd_documents(self.chunks)
-self.corpus = [document_to_dict(doc) for doc in self.chunks]
-self.corpus_tokens = [list(jieba.cut(doc["content"])) for doc in self.corpus]
-self.bm25 = BM25Plus(self.corpus_tokens)
-```
+原来的内存向量库替换为 Chroma，仍然使用 aadd_documents 和 asimilarity_search。
 
-self.vectorstore 在初始化时已经设置为 InMemoryVectorStore(embedding=embeddings)。
+1. load_and_split_documents(path) 读取并切分一份 Markdown。
+2. 根据资料ID、文件名、片段位置和文本生成稳定的片段ID。
+3. import_markdown 查询 Chroma 已有ID，只对新增内容调用 Embedding。
+4. 同步删除该资料已经失效的旧片段，避免修改文档后检索旧内容。
+5. refresh_bm25 从持久化文本恢复关键词索引。
 
-aadd_documents 内部会调用 Embedding，把每段文字变成向量，再存进内存。BM25则保存分词后的词频统计。它们处理同一份 chunks，返回时通过 id 对齐。
+Chroma 文件在 data/chroma/，重启不需要重复计算未变化的向量。BM25 对象仍在内存中，但它的原始文本从 Chroma 恢复，不会丢失。
 
-self 只是表示“这个 CourseRAG 对象保存的变量”。用一个类是为了让索引在服务启动时建一次，后续问题重复使用，而不是每次提问都重新建库。
+这一部分比原来的纯内存版本多了“比较新旧片段”的步骤，是为了支持上传和持久化；检索算法没有变。
 
 ## 提问时：检索资料
 
@@ -100,7 +98,20 @@ Agent 按 hint/check/explain 模式回答，并用 [课程:doc_3] 这样的编�
 - State：当前会话消息和调用计数，通过 SQLite Checkpointer 保存。
 - Store：跨会话的学习偏好，用户在前端主动保存。
 - Middleware：模型调用前加入偏好和模式，调用后计数，工具调用时显示进度。
-- 每轮先用 tool_choice 指定 search_course；尝试检索后切回 auto，让模型自主选择后续工具。这对应你笔记里的“动态控制工具调用”。
+- 附有资料ID时先用 tool_choice 指定 import_material，提交后切回 auto；普通学习问题先 search_course。用一个简单的开头匹配识别“我要上传”等请求，在没有文件时提示选择附件，避免无关检索。
 - SummarizationMiddleware：消息达到24条时做摘要，并保留最近8条消息。
 
 可以先只看 build_agent，再看 middleware，最后看 app.py 的HTTP和流式传输。不用一次把所有文件都读完。
+
+
+## MinerU 入库的三个部分
+
+- uploads.py：接收真实文件并上传 OSS，返回服务端生成的资料ID。
+- mineru_mcp.py：向 Agent 暴露 import_material 工具。MCP 子进程读取 .env 和同一份任务数据库，用短时 OSS 链接调用 MinerU；密钥和下载链接不传给模型。
+- materials.py：后台每5秒查看任务，解析完成后读取ZIP内的Markdown，再调用 rag.import_markdown。
+
+后台协程由 FastAPI lifespan 启动，服务关闭时取消；任务记录保存在 SQLite，重启后能继续轮询。当前不引入 Redis 或额外任务队列。MCP 工具只等“提交成功”，避免PDF解析期间长时间占用Agent调用。
+
+失败任务可从页面附上原资料ID，再由 Agent 调用同一个工具。已存在远程任务ID时继续该任务，解析明确失败时才允许重新提交。只有 ready 状态才能宣称已入库。
+
+短期记忆仍是 SQLite Checkpointer，长期偏好仍是 Store，本次没有改变其接口。

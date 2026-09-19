@@ -32,7 +32,7 @@ class Repository:
         identifier = str(uuid.uuid4())
         await self.db.execute(
             "INSERT INTO threads(id,user_id,title) VALUES(?,?,?)",
-            (identifier, "local-student", "新的概率论讨论"),
+            (identifier, "local-student", "新的学习讨论"),
         )
         await self.db.commit()
         return identifier
@@ -64,8 +64,8 @@ class Repository:
             (identifier, question, json.dumps(result, ensure_ascii=False)),
         )
         await self.db.execute(
-            "UPDATE threads SET title=? WHERE id=? AND title=?",
-            (question[:28], identifier, "新的概率论讨论"),
+            "UPDATE threads SET title=? WHERE id=? AND title IN (?,?)",
+            (question[:28], identifier, "新的学习讨论", "新的概率论讨论"),
         )
         await self.db.commit()
 

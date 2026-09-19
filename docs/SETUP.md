@@ -47,8 +47,8 @@ Endpoint 必须对应 Bucket 所在地域，不能把杭州地址用于深圳 Bu
 ## 运行与排错
 
 - 启动：项目根目录执行 uv sync --frozen，然后按 README 启动前后端。
-- 首次启动要调用 Embedding 建立内存向量库，等待服务显示 Application startup complete。
-- 修改 .env 或知识库后，需要重启后端。
+- 首次启动要调用 Embedding 建立 Chroma 持久化向量库；后续启动复用已有向量，等待服务显示 Application startup complete。
+- 修改 .env 或内置 knowledge/*.md 后，需要重启后端；界面上传入库会自动更新索引。
 - InvalidApiKey / 401：检查百炼 Key 和基础地址是否对应。
 - ModelNotFound / 403：检查模型名、地域、开通权限。
 - OSS上传502：检查 Endpoint、Bucket、AccessKey 和 RAM 权限。
@@ -57,3 +57,21 @@ Endpoint 必须对应 Bucket 所在地域，不能把杭州地址用于深圳 Bu
 - 图片转录不正确：上传更清晰的图片，并在问题中补充关键符号。
 
 没有登录界面，前端连接设置只填写后端地址。后端默认只绑定本机127.0.0.1。
+
+
+## MinerU 与资料上传
+
+在 .env 增加 MINERU_TOKEN，值为 MinerU 官方 Token。
+
+接口使用官方 https://mineru.net/api/v4/extract/task，POST 提交，GET /{task_id} 查询状态。默认 vlm 模型，开启公式和表格识别。
+
+PDF 先进入你的私有 OSS，MinerU 通过1小时签名URL下载。这样可以复用现有OSS配置并保留原件。无需额外 STS 配置。图片题目的签名链接仍为5分钟。
+
+资料默认20MB以内；图片5MB以内。MinerU还有服务端页数、额度等限制，以控制台为准。Token错误或额度不足时，页面显示失败原因，可修改配置、重启后重试。
+
+入库任务与Markdown分别在 data/materials.sqlite 和 data/knowledge/。不要只备份Chroma而丢掉这些文件，建议一起备份 data/。当前只导入解析文本，不提取压缩包中的图片资源。
+
+官方参考：
+
+- [MinerU 解析接口](https://mineru.net/doc/docs/index_en/)
+- [LangChain Chroma 接口](https://reference.langchain.com/python/langchain-chroma/vectorstores/Chroma)

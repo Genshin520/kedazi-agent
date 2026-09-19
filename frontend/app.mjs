@@ -1,8 +1,9 @@
 import {parseSSE} from "./sse.mjs";
 const $ = id => document.getElementById(id);
 let origin = sessionStorage.getItem("kedazi-origin") || "http://127.0.0.1:8000";
+let pendingMaterial = null, materialFile = null;
 let threadId = null, busy = false, controller = null, previewURL = null, connected = false;
-const modeDescriptions = {hint:"先给一点提示，把思考的空间留给你。", check:"从你的步骤出发，找到第一个需要调整的地方。", explain:"把事件、公式和计算连起来，完整走一遍。"};
+const modeDescriptions = {hint:"先给一点提示，把思考的空间留给你。", check:"从你的步骤出发，找到第一个需要调整的地方。", explain:"把概念、推理和例子连起来，完整走一遍。"};
 $("api-origin").value = origin;
 function status(text, error=false) { $("status").textContent=text; $("status").classList.toggle("error",error); }
 function node(tag, text, cls) { const el=document.createElement(tag); if(text!=null)el.textContent=text;if(cls)el.className=cls;return el; }
@@ -17,7 +18,7 @@ async function api(path, options={}) {
 }
 function setBusy(value) {
   busy=value;
-  for (const el of document.querySelectorAll("#send,#new-thread,#file,.thread,.examples button,#settings-open,#profile-open,#remove-file")) el.disabled=value;
+  for (const el of document.querySelectorAll("#send,#new-thread,#file,.thread,.examples button,#settings-open,#profile-open,#remove-file,#material-file,#remove-material,.retry-material")) el.disabled=value;
   $("stop").hidden=!value;
   $("question").disabled=value;
 }
@@ -71,7 +72,7 @@ async function refreshThreads() {
 async function openThread(id) {
   if(busy)return;
   const history=await(await api("/api/threads/"+id)).json();
-  threadId=id; $("messages").replaceChildren(); removeFile(); renderEvidence([]);
+  threadId=id; $("messages").replaceChildren(); removeFile(); removeMaterial(); renderEvidence([]);
   for(const turn of history) {message("user",turn.question);message("assistant",turn.result.answer);}
   if(history.length) {const result=history.at(-1).result;renderEvidence(result.retrieval);renderProcess(result);}
   await refreshThreads();status("已恢复讨论记录。");
@@ -80,14 +81,14 @@ async function newThread() {
   if(busy)return;
   threadId=(await(await api("/api/threads",{method:"POST"})).json()).id;
   $("messages").replaceChildren();message("assistant","新的一页。把题目或你的思路告诉我吧。");
-  renderEvidence([]);$("process").replaceChildren();removeFile();await refreshThreads();$("question").focus();
+  renderEvidence([]);$("process").replaceChildren();removeFile();removeMaterial();await refreshThreads();$("question").focus();
 }
 async function connect() {
   const health=await(await api("/health")).json();
   await refreshThreads(); connected=true;
   $("connection").textContent="已连接 · "+health.text_model;
   $("connection").classList.add("ready");
-  status("已连接，可以提问或上传题目图片。");
+  status("已连接，可以提问、上传题目图片或添加学习资料。");
 }
 function removeFile() {
   if(previewURL)URL.revokeObjectURL(previewURL);
@@ -102,19 +103,25 @@ $("file").onchange=()=>{
 $("remove-file").onclick=removeFile;
 $("chat-form").onsubmit=async event=>{
   event.preventDefault();if(busy)return;
-  const question=$("question").value.trim();if(!question){status("请先写下问题，或说明希望如何分析图片。",true);return;}
+  const question=$("question").value.trim() || ((materialFile||pendingMaterial) ? "请把这份资料加入知识库。" : "");if(!question){status("请先写下问题，或说明希望如何分析图片。",true);return;}
   if(!connected){$("settings-dialog").showModal();return;}
   let assistant, completed=false;
   controller=new AbortController();setBusy(true);
   try {
     if(!threadId)threadId=(await(await api("/api/threads",{method:"POST",signal:controller.signal})).json()).id;
+    if(materialFile && !pendingMaterial) {
+      status("正在上传学习资料…");
+      const form=new FormData();form.append("file",materialFile);
+      pendingMaterial=await(await api("/api/materials",{method:"POST",body:form,signal:controller.signal})).json();
+    }
+    const selectedMaterial=pendingMaterial;
     let imageId=null;
     const file=$("file").files[0];
     if(file){status("正在上传题目图片…");const form=new FormData();form.append("file",file);imageId=(await(await api("/api/uploads",{method:"POST",body:form,signal:controller.signal})).json()).image_id;}
-    $("welcome")?.remove();message("user",question+(file?"\n[已附题目图片]":""));assistant=message("assistant","");
+    $("welcome")?.remove();message("user",question+(file?"\n[已附题目图片]":"")+(selectedMaterial?"\n[资料："+selectedMaterial.filename+"]":""));assistant=message("assistant","");
     $("question").value="";removeFile();renderEvidence([]);$("process").replaceChildren();
     const response=await api("/api/chat",{method:"POST",signal:controller.signal,body:JSON.stringify({
-      thread_id:threadId,message:question,image_id:imageId,mode:document.querySelector('[name="mode"]:checked').value
+      thread_id:threadId,message:question,image_id:imageId,material_id:selectedMaterial?.id || null,mode:document.querySelector('[name="mode"]:checked').value
     })});
     const retrieval=[];
     for await(const {event,data} of parseSSE(response.body)){
@@ -124,8 +131,8 @@ $("chat-form").onsubmit=async event=>{
       else if(event==="observation")status("题目识别完成，正在查找课程依据。");
       else if(event==="error")throw new Error(data.message+" 请求号："+data.request_id);
       else if(event==="done"){
-        completed=true;assistant.body.textContent=data.answer;renderEvidence(data.retrieval);renderProcess(data);
-        status(data.invalid_citations.length?"回答已完成，存在未通过校验的引用，请核对。":"本轮已完成。可以继续追问，或展开右侧课程依据。");
+        completed=true;removeMaterial();await refreshMaterials().catch(()=>{});assistant.body.textContent=data.answer;renderEvidence(data.retrieval);renderProcess(data);
+        status(selectedMaterial ? "请在“我的知识库”查看资料处理结果。" : data.invalid_citations.length?"回答已完成，存在未通过校验的引用，请核对。":"本轮已完成。可以继续追问，或展开右侧课程依据。");
       }
     }
     if(!completed)throw new Error("响应未完成，请重新提问。");
@@ -148,7 +155,7 @@ $("settings-form").onsubmit=async e=>{
   try {
     const url=new URL($("api-origin").value);
     if(!["http:","https:"].includes(url.protocol)||url.username||url.password)throw new Error("请输入有效的 HTTP(S) 地址");
-    origin=url.origin;threadId=null;connected=false;
+    origin=url.origin;threadId=null;connected=false;removeMaterial();
     sessionStorage.setItem("kedazi-origin",origin);
     await connect();$("messages").replaceChildren();renderEvidence([]);$("process").replaceChildren();$("settings-dialog").close();
   }catch(error){status(error.message,true);$("settings-dialog").close();}
@@ -166,3 +173,51 @@ for(const name of ["evidence","process"])$("tab-"+name).onclick=()=>{
   for(const current of ["evidence","process"]){$(current).hidden=current!==name;$("tab-"+current).classList.toggle("active",current===name);$("tab-"+current).setAttribute("aria-pressed",String(current===name));}
 };
 connect().catch(()=>{connected=false;status("尚未连接后端。请启动服务，再打开“连接设置”。",true);});
+
+function removeMaterial() {
+  pendingMaterial=null;materialFile=null;$("material-file").value="";$("material-attachment").hidden=true;
+}
+$("remove-material").onclick=removeMaterial;
+$("material-file").onchange=()=>{
+  const file=$("material-file").files[0];if(!file)return;
+  const pdf=file.name.toLowerCase().endsWith(".pdf");
+  if((!pdf&&!["image/jpeg","image/png","image/webp"].includes(file.type))||file.size>(pdf?20:5)*1024*1024) {
+    removeMaterial();status("请选择20MB以内的PDF或5MB以内的JPEG、PNG、WEBP图片。",true);return;
+  }
+  materialFile=file;pendingMaterial=null;
+  $("material-filename").textContent="待入库："+file.name;$("material-attachment").hidden=false;
+  if(!$("question").value.trim())$("question").value="请把这份资料加入知识库。";
+  status("资料将在发送后上传并解析。题目截图请使用“上传题目”。");
+};
+const materialLabels={uploaded:"待提交",submitting:"正在提交",pending:"排队中",parsing:"解析中",indexing:"建立索引",ready:"已入库",failed:"失败"};
+async function refreshMaterials() {
+  const rows=await(await api("/api/materials")).json();
+  $("materials-list").replaceChildren();
+  if(!rows.length)$("materials-list").append(node("p","还没有上传资料。内置资料涵盖概率论、线性代数、Python和计算机网络。","muted"));
+  for(const row of rows) {
+    const card=node("div",null,"material-card");
+    card.append(node("strong",row.filename));
+    card.append(node("p",(materialLabels[row.status]||row.status)+(row.status==="ready"?" · "+row.chunks+" 个片段":"")));
+    if(row.error)card.append(node("p",row.error,"material-error"));
+    if(row.status==="ready") {
+      const link=node("a","下载 Markdown","text-button");link.href=origin+"/api/materials/"+row.id+"/markdown";link.target="_blank";link.rel="noopener";card.append(link);
+    }
+    if(["uploaded","failed"].includes(row.status)) {
+      const button=node("button",row.status==="failed"?"通过助手重试":"通过助手入库","secondary retry-material");
+      button.disabled=busy;
+      button.onclick=()=>{
+        removeMaterial();pendingMaterial=row;
+        $("material-filename").textContent="待入库："+row.filename;$("material-attachment").hidden=false;
+        $("question").value="请把这份资料加入知识库。";
+        $("materials-dialog").close();$("question").focus();
+      };
+      card.append(button);
+    }
+    $("materials-list").append(card);
+  }
+}
+$("materials-open").onclick=async()=>{
+  $("materials-dialog").showModal();
+  try{await refreshMaterials();}catch(e){$("materials-list").replaceChildren(node("p",e.message,"material-error"));}
+};
+setInterval(()=>{if(connected&&$("materials-dialog").open)refreshMaterials().catch(()=>{});},5000);

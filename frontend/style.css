@@ -7,3 +7,10 @@
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 
 .trace span{white-space:pre-wrap}
+
+#material-attachment{display:flex;align-items:center;gap:10px;padding:8px;background:var(--pale);border-radius:8px;font-size:12px;overflow-wrap:anywhere}
+#material-attachment[hidden]{display:none}.composer-actions{flex-wrap:wrap}
+.material-card{padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.material-card strong{font-size:14px}.material-card p{font-size:12px;margin:5px 0}
+.material-error{color:var(--error)}.material-card a{display:inline-block;min-height:44px;text-decoration:underline}
+#materials-dialog{max-width:560px;max-height:85vh;overflow:auto}

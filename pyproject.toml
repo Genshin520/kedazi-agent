@@ -1,6 +1,6 @@
 [project]
 name = "kedazi"
-version = "0.2.0"
+version = "0.3.0"
 description = "课搭子：基于课程资料的多模态学习助手"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
   "pydantic-settings>=2.7,<3", "aiosqlite>=0.21,<1",
   "numpy>=2,<3", "rank-bm25>=0.2.2,<0.3", "jieba>=0.42.1,<0.43",
   "dashscope>=1.25,<2", "oss2>=2.19,<3", "pillow>=11,<13",
-  "python-multipart>=0.0.20,<1"
+  "python-multipart>=0.0.20,<1", "langchain-chroma>=1,<2", "httpx>=0.28,<1"
 ]
 [build-system]
 requires = ["hatchling"]

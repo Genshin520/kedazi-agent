@@ -1,105 +1,86 @@
-# 课搭子
+# 课搭子 · 个人学习助手
 
-面向大学生的课程辅导助手。支持上传题目图片、查询课程资料、分步辅导和数值核验。
-
-代码只调用真实模型。使用 Python + uv 管理后端，独立 HTML/JavaScript 前端通过 HTTP 和流式 SSE 与后端通信。
+基于 LangChain 的多模态学习助手。上传题目图片进行辅导，或把 PDF、资料图片转为 Markdown 加入个人知识库，之后结合资料回答不同课程的问题。
 
 ## 启动
 
-在项目根目录运行：
+保留已填写的 .env，不要用模板覆盖。首次解压时才复制 .env.example 并填入自己的配置。
 
-```powershell
+在项目根目录打开两个终端：
+
+~~~powershell
 uv sync --frozen
 uv run --frozen uvicorn kedazi.app:app --host 127.0.0.1 --port 8000
-```
+~~~
 
-再开一个终端，同样进入项目根目录：
-
-```powershell
+~~~powershell
 uv run --frozen python -m http.server 5173 --bind 127.0.0.1 --directory frontend
-```
+~~~
 
-打开 [课搭子](http://127.0.0.1:5173)。接口文档在 [FastAPI Docs](http://127.0.0.1:8000/docs)。
+打开 http://127.0.0.1:5173；接口文档在 http://127.0.0.1:8000/docs。无需单独启动 Chroma 或 MCP。
 
-已有 .env 就直接使用，不要用 .env.example 覆盖你填好的内容。第一次拿到压缩包时才复制 .env.example 为 .env 并填写自己的凭据。压缩包不含密钥。
+## 使用方法
 
-当前不需要登录或项目访问令牌。保持监听127.0.0.1，在本机使用即可。
+- **上传题目**：选择 JPEG、PNG、WEBP（5MB以内），写下问题后发送。Qwen 视觉模型转录题目，主 Agent 结合资料辅导。
+- **添加资料**：选择 PDF（20MB以内）或图片（5MB以内），发送“请把这份资料加入知识库”。Agent 调用 MinerU MCP，后台解析并入库。
+- **我的知识库**：查看排队、解析、索引、完成或失败状态；入库后可下载 Markdown；失败任务点击“通过助手重试”，再发送消息。
+- 只说“我要上传资料”但未选文件时，助手会提示添加附件。
+- 入库完成后，在任意讨论中提问。当前所有资料共用一个个人知识库，没有课程隔离。
+- 支持给提示、检查步骤、完整讲解三种方式，以及持久化对话和学习偏好。
 
-## .env 只需要这些
+## 配置
 
-| 配置 | 作用 |
+| 字段 | 用途 |
 |---|---|
-| DASHSCOPE_API_KEY | 阿里云百炼 API Key |
-| DASHSCOPE_BASE_URL | 百炼聊天与向量接口的基础地址 |
-| TEXT_MODEL=qwen-plus | 主 Agent 及检索词改写使用的文本模型 |
-| VISION_MODEL=qwen3.5-plus | 读取题目图片的多模态模型 |
-| EMBEDDING_MODEL=qwen3.7-text-embedding-flash | 把问题和知识片段变成向量 |
-| RERANK_MODEL=gte-rerank-v2 | 对召回的知识片段再次排序 |
-| OSS_ENDPOINT | Bucket 对应地域的 Endpoint |
-| OSS_BUCKET | Bucket 名称 |
-| OSS_ACCESS_KEY_ID | OSS AccessKey ID |
-| OSS_ACCESS_KEY_SECRET | OSS AccessKey Secret |
+| DASHSCOPE_API_KEY | 百炼密钥 |
+| DASHSCOPE_BASE_URL | 百炼 OpenAI 兼容地址 |
+| TEXT_MODEL | 主模型，默认 qwen-plus |
+| VISION_MODEL | 图片模型，默认 qwen3.5-plus |
+| EMBEDDING_MODEL | 向量模型，默认 qwen3.7-text-embedding-flash |
+| RERANK_MODEL | 重排模型，默认 gte-rerank-v2 |
+| MINERU_TOKEN | MinerU 官方解析 API Token |
+| OSS_ENDPOINT / OSS_BUCKET | 私有文件存储地址和 Bucket |
+| OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET | OSS 凭据 |
 
-未配置 OSS 时仍可使用文本对话，上传时会提示补齐配置。你目前填写的模型名、深圳 OSS 地址和凭据已保留。
+MinerU 与百炼使用各自的密钥。没有配置 MinerU 时仍可使用内置知识库和题目图片；资料入库需要 MinerU 与 OSS。真实密钥只放在 .env，Git 忽略 .env 和 data/。
 
-## 先读这几个文件
+## 资料入库
 
-1. [models.py](src/kedazi/models.py)：定义文本、图片、Embedding 模型。
-2. [rag.py](src/kedazi/rag.py)：按你笔记的步骤写的 RAG。先看最下面的 search()，再看每个步骤。
-3. [agent.py](src/kedazi/agent.py)：工具、MCP、Context、State、Middleware、记忆与 create_agent。
-4. [app.py](src/kedazi/app.py)：把 Agent 接到前后端接口。
-5. [RAG 逐步说明](docs/LEARNING.md)：与代码一一对应的中文解释。
+~~~text
+前端选择文件 → FastAPI 上传私有 OSS → 返回资料ID
+发送消息 → Agent 调用 import_material（MCP）
+→ MinerU 接收1小时有效的下载链接并创建任务
+→ 后台轮询 → 下载结果ZIP并读取 Markdown
+→ 按标题切分 → Qwen Embedding → Chroma → 刷新 BM25
+~~~
 
-## RAG 主流程
+MinerU 的提交是异步任务，提交成功不等于入库完成。任务状态保存在 SQLite，后端重启后会继续处理已提交任务；停止聊天也不会撤销已提交的入库任务。网络中断恰好发生在提交阶段时，可能需要去 MinerU 控制台核对，避免重复解析。
 
-```python
-rewritten_query = await self.rewrite_query(query)
-dense_docs = await self.dense_search(rewritten_query)
-bm25_docs = self.bm25_search(rewritten_query)
-fused_docs = reciprocal_rank_fusion([dense_docs, bm25_docs])
-final_docs = await asyncio.to_thread(self.rerank, query, fused_docs[:6])
-```
+原 PDF 保存在 OSS，解析出的文本保存在 data/knowledge/，向量保存在 data/chroma/。没有公开 Bucket，也不使用 STS。MinerU 需要通过短时签名链接读取资料，因此资料会交给 MinerU 解析。
 
-向量库直接使用笔记里的 InMemoryVectorStore。每次启动读取 knowledge/*.md、切分并调用 Embedding 建库；小知识库这样最直观。修改资料后重启即可。每次启动会消耗一小次向量化调用，之后每次问题还会调用查询改写、查询向量化、重排和 Agent。
+## RAG 流程
 
-BM25 用 jieba 做中文分词；两路各召回最多5条，RRF融合后选最多6条送重排，最后返回最多3条。RRF与模型精排是两个步骤。重排分数用于相对排序，不是答案正确率。
+~~~text
+问题改写 → Chroma向量检索 + BM25关键词检索
+→ RRF融合 → gte-rerank-v2重排 → Agent带来源回答
+~~~
 
-## 为什么“重排模型”之前还要配 URL
+每段资料使用稳定ID。未变化的内容在重启时复用已有向量，新资料只向量化新片段。BM25 从 Chroma 中的文本恢复，两个检索来源保持一致。更换向量模型或服务地址时使用新的集合并重新建立向量。
 
-远程模型调用始终有三个要素：地址、模型名、密钥。之前直接发送 HTTP 请求，因此把重排 URL 单独放在 .env 中，增加了你需要理解的细节。
+内置 knowledge/ 包含概率论、线性代数、Python、计算机网络。修改内置 Markdown 后重启即可；通过界面入库不需要重启。
 
-现在改为：
+## 阅读代码
 
-```python
-dashscope.TextReRank.call(
-    api_key=...,
-    model=settings.rerank_model,
-    query=query,
-    documents=[...],
-    top_n=3,
-)
-```
+| 文件 | 内容 |
+|---|---|
+| src/kedazi/models.py | 文本、视觉、Embedding模型 |
+| src/kedazi/rag.py | 切分、Chroma持久化、混合检索、重排 |
+| src/kedazi/agent.py | Agent、工具、Runtime、Middleware、记忆 |
+| src/kedazi/mineru_mcp.py | MinerU MCP 工具入口 |
+| src/kedazi/materials.py | 资料状态、MinerU请求、后台入库 |
+| src/kedazi/uploads.py | 图片校验、OSS文件上传 |
+| src/kedazi/app.py | HTTP与SSE接口、服务生命周期 |
 
-你只需指定一个重排模型名。SDK负责接口路径，models.py 根据 DASHSCOPE_BASE_URL 推导同地域的SDK基础地址。不是同时调用两个重排模型。
+更多解释见 docs/LEARNING.md 和 docs/SETUP.md。
 
-当前 gte-rerank-v2 使用这个 SDK 调用方式。任意不同供应商的模型不能只改名字就通用；先用当前已经连通的模型即可。
-
-## 保留的功能
-
-- hint / check / explain 三种辅导模式。
-- 视觉模型先识别题目；文本 Agent 再结合课程资料辅导。
-- 图片经过校验、重新编码后上传私有 OSS，调用视觉模型时生成短时下载链接。
-- 一个本地课程检索工具，一个自建 MCP 数值计算工具；每轮先查课程，再由模型选择后续工具。
-- SQLite Checkpointer 持久化对话；Store 保存主动填写的学习偏好。
-- Middleware 动态加入教学模式和偏好，记录工具状态，限制调用次数，压缩长对话。
-- 流式回答、课程依据展示、同一讨论互斥、异常提示和停止按钮。
-
-目录中的 memory.py 是长期 Store 适配，repository.py 是会话与图片记录，uploads.py 处理 OSS。可以先跳过这些，先看懂 rag.py 与 agent.py。
-
-## 资料与使用范围
-
-knowledge/probability.md 是自编的小型概率论资料，可自行增加课程 Markdown。图片模糊、课程资料未覆盖或公式推导不确定时，仍需要人工核对。
-
-会话、图片记录和偏好保存在 data/，重启不会丢失；向量库在内存中，重启会重建。仅支持单进程运行，不要增加 --workers。中断后可能保留部分执行状态，遇到恢复异常可以新建讨论。
-
-更多配置说明见 [SETUP.md](docs/SETUP.md)。
+当前适用于本机单用户、单进程，不要增加 --workers。Chroma 是本地持久化模式，不需要额外数据库服务。首版导入 Markdown 文本，不做 PDF 内插图检索或页码精确定位；引用保留文件名、章节和片段ID。解析出的公式、表格和图片题目仍需核对。

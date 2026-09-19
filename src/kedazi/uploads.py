@@ -51,6 +51,20 @@ class ImageStorage:
         )
         return object_key
 
-    async def signed_url(self, object_key):
+    async def signed_url(self, object_key, expires=300):
         # 私有图片不能直接用普通URL读取。这只是临时下载链接，不需要额外凭据。
-        return await asyncio.to_thread(self.get_bucket().sign_url, "GET", object_key, 300, slash_safe=True)
+        return await asyncio.to_thread(self.get_bucket().sign_url, "GET", object_key, expires, slash_safe=True)
+
+    async def upload_material(self, data, filename):
+        """PDF 保留原文件；资料图片复用现有图片校验与重新编码。"""
+        if filename.lower().endswith(".pdf"):
+            if not data or len(data) > 20 * 1024 * 1024 or not data.startswith(b"%PDF-"):
+                raise ValueError("请选择20MB以内的有效PDF文件")
+            suffix, content_type = ".pdf", "application/pdf"
+        else:
+            data = await asyncio.to_thread(normalize_image, data)
+            suffix, content_type = ".jpg", "image/jpeg"
+        key = f"kedazi/materials/{uuid.uuid4().hex}{suffix}"
+        await asyncio.to_thread(self.get_bucket().put_object, key, data,
+                                headers={"Content-Type": content_type, "x-oss-object-acl": "private"})
+        return key

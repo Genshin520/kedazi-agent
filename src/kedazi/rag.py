@@ -1,10 +1,12 @@
 """按笔记的顺序实现 RAG：每一步一个函数，search() 把它们串起来。"""
 import asyncio
+import hashlib
 
 import dashscope
 import jieba
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Plus
 
@@ -13,30 +15,27 @@ from kedazi.models import configure_reranker
 
 
 # 1. 读取 Markdown，先按标题切分，再限制每块长度。
-def load_and_split_documents():
+def load_and_split_documents(path, source=None, material_id="builtin"):
     header_splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=[("#", "一级标题"), ("##", "二级标题"), ("###", "三级标题")]
     )
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=350, chunk_overlap=50, separators=["\n\n", "\n", "。", " ", ""]
     )
-    chunks = []
-    for path in sorted((ROOT / "knowledge").glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        header_docs = header_splitter.split_text(text)
-        documents = text_splitter.split_documents(header_docs)
-        for doc in documents:
-            title = " / ".join(doc.metadata.values())
-            doc.page_content = title + "\n" + doc.page_content
-            doc.metadata = {
-                "id": f"doc_{len(chunks) + 1}",
-                "source": path.name,
-                "title": title,
-            }
-            chunks.append(doc)
-    if not chunks:
-        raise ValueError("knowledge 文件夹里没有可用的 Markdown 内容")
-    return chunks
+    text = path.read_text(encoding="utf-8")
+    documents = text_splitter.split_documents(header_splitter.split_text(text))
+    source = source or path.name
+    for index, doc in enumerate(documents):
+        title = " / ".join(doc.metadata.values()) or source
+        doc.page_content = title + "\n" + doc.page_content
+        fingerprint = f"{material_id}/{source}/{index}/{doc.page_content}"
+        doc.metadata = {
+            "id": "doc_" + hashlib.sha256(fingerprint.encode()).hexdigest()[:20],
+            "source": source, "title": title, "material_id": material_id,
+        }
+    if not documents:
+        raise ValueError("Markdown 中没有可用的文字")
+    return documents
 
 
 def document_to_dict(doc):
@@ -63,16 +62,69 @@ class CourseRAG:
     def __init__(self, settings, model, embeddings):
         self.settings = settings
         self.model = model
-        self.vectorstore = InMemoryVectorStore(embedding=embeddings)
+        # 模型改变时使用不同集合，避免混用不同维度或语义空间的向量。
+        model_key = hashlib.sha256(
+            (settings.dashscope_base_url + settings.embedding_model).encode()
+        ).hexdigest()[:12]
+        self.vectorstore = Chroma(
+            collection_name="study_" + model_key,
+            embedding_function=embeddings,
+            persist_directory=str(settings.data_dir / "chroma"),
+        )
+        self.lock = asyncio.Lock()
         configure_reranker(settings)
 
-    # 3. 服务启动时建立两份索引，之后每次提问直接检索。
-    async def build_index(self):
-        self.chunks = load_and_split_documents()
-        await self.vectorstore.aadd_documents(self.chunks)
+    async def refresh_bm25(self):
+        saved = await asyncio.to_thread(self.vectorstore.get, include=["documents", "metadatas"])
+        self.chunks = [Document(page_content=text, metadata=meta)
+                       for text, meta in zip(saved["documents"], saved["metadatas"])]
         self.corpus = [document_to_dict(doc) for doc in self.chunks]
         self.corpus_tokens = [list(jieba.cut(doc["content"])) for doc in self.corpus]
-        self.bm25 = BM25Plus(self.corpus_tokens)
+        self.bm25 = BM25Plus(self.corpus_tokens) if self.corpus_tokens else None
+
+    async def import_markdown(self, path, source=None, material_id="builtin"):
+        documents = await asyncio.to_thread(load_and_split_documents, path, source, material_id)
+        # 添加稳定ID，重复导入和重启不重复调用向量模型。
+        async with self.lock:
+            saved = await asyncio.to_thread(self.vectorstore.get, where={"material_id": material_id})
+            existing = set(saved["ids"])
+            desired = {doc.metadata["id"] for doc in documents}
+            additions = [doc for doc in documents if doc.metadata["id"] not in existing]
+            try:
+                for offset in range(0, len(additions), 20):
+                    batch = additions[offset:offset + 20]
+                    await self.vectorstore.aadd_documents(batch, ids=[doc.metadata["id"] for doc in batch])
+            except Exception:
+                # 本轮失败时清理已写入的新片段；旧版本仍然可用。
+                added_ids = [doc.metadata["id"] for doc in additions]
+                if added_ids:
+                    await self.vectorstore.adelete(added_ids)
+                raise
+            obsolete = list(existing - desired)
+            if obsolete:
+                await self.vectorstore.adelete(obsolete)
+            await self.refresh_bm25()
+        return len(documents)
+
+    # 3. 启动时同步内置文档，并从 Chroma 恢复已入库的资料。
+    async def build_index(self):
+        from kedazi.materials import MaterialStore
+        builtins = list(sorted((ROOT / "knowledge").glob("*.md")))
+        active = {"builtin:" + path.name for path in builtins}
+        for path in builtins:
+            await self.import_markdown(path, material_id="builtin:" + path.name)
+        for row in MaterialStore(self.settings.data_dir).list():
+            if row["status"] == "ready":
+                active.add(row["id"])
+                path = MaterialStore(self.settings.data_dir).markdown_path(row["id"])
+                if path.exists():
+                    await self.import_markdown(path, row["filename"], row["id"])
+        saved = await asyncio.to_thread(self.vectorstore.get, include=["metadatas"])
+        stale = [key for key, meta in zip(saved["ids"], saved["metadatas"])
+                 if meta["material_id"] not in active]
+        if stale:
+            await self.vectorstore.adelete(stale)
+        await self.refresh_bm25()
 
     # 4. 查询改写：与笔记里的 rewrite_query 相同，只改成异步调用。
     async def rewrite_query(self, query):
@@ -89,6 +141,8 @@ class CourseRAG:
 
     # 6. BM25 检索：使用中文分词进行关键词匹配。
     def bm25_search(self, query, k=5):
+        if self.bm25 is None:
+            return []
         query_tokens = list(jieba.cut(query))
         scores = self.bm25.get_scores(query_tokens)
         indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
@@ -120,8 +174,9 @@ class CourseRAG:
     # 8. 完整流程：重点先看这十几行，再回头看上面每个函数。
     async def search(self, query):
         rewritten_query = await self.rewrite_query(query)
-        dense_docs = await self.dense_search(rewritten_query)
-        bm25_docs = self.bm25_search(rewritten_query)
+        async with self.lock:
+            dense_docs = await self.dense_search(rewritten_query)
+            bm25_docs = self.bm25_search(rewritten_query)
         fused_docs = reciprocal_rank_fusion([dense_docs, bm25_docs])
 
         # 同步 SDK 放到工作线程里，不阻塞 FastAPI 的事件循环。
